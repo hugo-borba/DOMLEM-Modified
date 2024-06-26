@@ -36,7 +36,10 @@ def formatting_file(df):
 
         df_exemples.columns = ["EXEMPLES"] + EXEMPLES_header
         df_exemples = df_exemples.iloc[1:]
-        df_exemples["EXEMPLES"] = df_exemples["EXEMPLES"].str.replace("_", " ")
+
+        # Aqui está a nova adição para converter as colunas de performance para tipo float
+        for col in df_exemples.columns[1:]:
+            df_exemples[col] = pd.to_numeric(df_exemples[col], errors='coerce')
 
         if "PREFERENCE" in df_atributes.columns:
             df_atributes = df_atributes.loc[:, :"PREFERENCE"]
@@ -91,17 +94,6 @@ def union_classes(df_exemples):
     
     return class_dfs
 
-def downward_union_classes(class_dfs):
-    decision_classes = sorted(class_dfs.keys())
-    downward_unions = {}
-    d_agg_df = pd.DataFrame()
-    
-    for cls in decision_classes:
-        d_agg_df = pd.concat([d_agg_df, class_dfs[cls]])
-        downward_unions[cls] = d_agg_df.copy()
-    
-    return downward_unions, d_agg_df
-
 def upward_union_classes(class_dfs):
     decision_classes = sorted(class_dfs.keys(), reverse=True)
     upward_unions = {}
@@ -113,99 +105,200 @@ def upward_union_classes(class_dfs):
     
     return upward_unions, u_agg_df
 
-def dominating_exemples(class_dfs, criteria, preferences):
+def downward_union_classes(class_dfs):
+    decision_classes = sorted(class_dfs.keys())
+    downward_unions = {}
+    d_agg_df = pd.DataFrame()
+    
+    for cls in decision_classes:
+        d_agg_df = pd.concat([d_agg_df, class_dfs[cls]])
+        downward_unions[cls] = d_agg_df.copy()
+    
+    return downward_unions, d_agg_df
+
+def dominating_exemples(class_dfs, criteria, preferences):  
     # Ordena as classes de decisão
     decision_classes = sorted(class_dfs.keys())
-    
+
     def is_better(r1, r2, preferences):
         # Verifica se r1 é melhor ou igual a r2 com base nas preferências
-        for x, y, p in zip(r1[:-1], r2[:-1], preferences[:-1]):  # Exclui a última coluna e preferência
+        for x, y, p in zip(r1[:-1], r2[:-1], preferences):
             if (p == "gain" and x < y) or (p == "cost" and x > y):
                 return False
         return True
 
     # Dicionário para armazenar as informações de dominância
     dominating_info = {}
-    
+
     # Itera sobre todas as classes de decisão
-    for i, cls in enumerate(decision_classes):
+    for cls in decision_classes:
         df = class_dfs[cls]
-        # Inicializa a estrutura para armazenar informações sobre dominância
-        class_dominating_info = []
-        
+
         # Itera sobre cada linha na classe atual
         for index, row in df.iterrows():
-            example_info = {
-                "Example": row["EXEMPLES"],
-                "Class": cls,
-                "Performance": row[criteria].values,
-                "Dominates": []
-            }
+            exemple = row["EXEMPLES"]
+            dominates_list = []
+
             # Verifica a dominância apenas com exemplos das classes superiores
-            for other_cls in decision_classes[i+1:]:
+            for other_cls in decision_classes:
                 other_df = class_dfs[other_cls]
                 for other_index, other_row in other_df.iterrows():
                     if is_better(row[criteria].values, other_row[criteria].values, preferences):
-                        example_info["Dominates"].append({
-                            "Example": other_row["EXEMPLES"],
-                            "Performance": other_row[criteria].values,
+                        dominates_list.append({
+                            f"Dominating - {exemple}": other_row["EXEMPLES"],
+                            "Performance": other_row[criteria].values.tolist(),  # Convertendo para lista
                             "Class": other_cls
                         })
-            
-            # Apenas adiciona ao dicionário se dominar algum outro exemplo
-            if example_info["Dominates"]:
-                class_dominating_info.append(example_info)
-        
-        dominating_info[cls] = class_dominating_info
-    
+
+            # Adiciona ao dicionário se dominar algum outro exemplo
+            if dominates_list:
+                dominating_info[exemple] = pd.DataFrame(dominates_list)
+
+    # Ordena as chaves do dicionário alfabeticamente
+    dominating_info = {k: dominating_info[k] for k in sorted(dominating_info)}
+
     return dominating_info
 
 def dominated_exemples(class_dfs, criteria, preferences):
     # Ordena as classes de decisão
     decision_classes = sorted(class_dfs.keys(), reverse=True)
-    
-    def is_better(r1, r2, preferences):
-        # Verifica se r1 é melhor ou igual a r2 com base nas preferências
-        for x, y, p in zip(r1[:-1], r2[:-1], preferences[:-1]):  # Exclui a última coluna e preferência
-            if (p == "gain" and x < y) or (p == "cost" and x > y):
+
+    def is_worse(r1, r2, preferences):
+        # Verifica se r1 é pior ou igual a r2 com base nas preferências
+        for x, y, p in zip(r1[:-1], r2[:-1], preferences):
+            if (p == "gain" and x > y) or (p == "cost" and x < y):
                 return False
         return True
 
     # Dicionário para armazenar as informações de dominância
     dominated_info = {}
-    
+
     # Itera sobre todas as classes de decisão
-    for i, cls in enumerate(decision_classes):
+    for cls in decision_classes:
         df = class_dfs[cls]
-        # Inicializa a estrutura para armazenar informações sobre dominância
-        class_dominated_info = []
-        
+
         # Itera sobre cada linha na classe atual
         for index, row in df.iterrows():
-            example_info = {
-                "Example": row["EXEMPLES"],
-                "Class": cls,
-                "Performance": row[criteria].values,
-                "Dominated By": []
-            }
-            # Verifica a dominância apenas com exemplos das classes inferiores
-            for other_cls in decision_classes[i+1:]:
+            exemple = row["EXEMPLES"]
+            dominated_by_list = []
+
+            # Verifica a dominância apenas com exemplos das classes superiores
+            for other_cls in decision_classes:
                 other_df = class_dfs[other_cls]
                 for other_index, other_row in other_df.iterrows():
-                    if is_better(other_row[criteria].values, row[criteria].values, preferences):
-                        example_info["Dominated By"].append({
-                            "Example": other_row["EXEMPLES"],
-                            "Performance": other_row[criteria].values,
+                    if is_worse(row[criteria].values, other_row[criteria].values, preferences):
+                        dominated_by_list.append({
+                            f"Dominated - {exemple}": other_row["EXEMPLES"],
+                            "Performance": other_row[criteria].values.tolist(),  # Convertendo para lista
                             "Class": other_cls
                         })
-            
-            # Apenas adiciona ao dicionário se for dominado por algum outro exemplo
-            if example_info["Dominated By"]:
-                class_dominated_info.append(example_info)
-        
-        dominated_info[cls] = class_dominated_info
-    
+
+            # Adiciona ao dicionário se for dominado por algum outro exemplo
+            if dominated_by_list:
+                dominated_info[exemple] = pd.DataFrame(dominated_by_list)
+
+    # Ordena as chaves do dicionário alfabeticamente
+    dominated_info = {k: dominated_info[k] for k in sorted(dominated_info)}
+
     return dominated_info
+
+def lower_approximation(downward_unions, dominating_info, df_exemples):
+    low_app = OrderedDict()  # Dicionário ordenado para armazenar as aproximações inferiores
+
+    # Ordena as downward_unions por chave (classe) em ordem crescente
+    sorted_classes = sorted(downward_unions.keys())
+
+    for i, cls in enumerate(sorted_classes):
+        union = downward_unions[cls].copy()  # Cria uma cópia do DataFrame para modificar
+        tmp = []  # Lista temporária para armazenar objetos que pertencem à aproximação inferior
+        UClass = set(union['EXEMPLES'])  # Cria um conjunto dos exemplos na união de classes atual
+
+        for exemple in UClass:
+            is_conflicting = False
+
+            # Verifica se o exemplo está em dominating_info
+            if exemple in dominating_info:
+                obj = dominating_info[exemple]
+                domination_col = next((col for col in obj.columns if "Dominating" in col), None)
+
+                if domination_col:
+                    domination_set = set(obj[domination_col])
+                    # Verifica se o exemplo domina outro exemplo de classe maior
+                    for dominating_exemple in domination_set:
+                        dominating_class = df_exemples[df_exemples["EXEMPLES"] == dominating_exemple]["Dec"].values
+                        if dominating_class.size > 0 and dominating_class[0] > cls:
+                            is_conflicting = True
+                            break
+
+            if not is_conflicting:
+                performance = df_exemples[df_exemples["EXEMPLES"] == exemple].iloc[0, 1:-1].tolist()
+                original_class = df_exemples[df_exemples["EXEMPLES"] == exemple]["Dec"].values[0]
+                tmp.append({
+                    "Exemples": exemple,
+                    "Performance": performance,
+                    "Class": original_class
+                })
+
+        # Ordena a lista temporária de exemplos alfabeticamente pela coluna "Exemples"
+        tmp = sorted(tmp, key=lambda x: x["Exemples"])
+
+        low_app[cls] = tmp  # Adiciona a classe e os objetos não conflitantes ao dicionário de aproximações inferiores
+
+    return low_app
+
+def upward_approximation(upward_unions, dominating_info, df_exemples):
+    up_app = OrderedDict()  # Dicionário ordenado para armazenar as aproximações superiores
+
+    # Ordena as upward_unions por chave (classe) em ordem crescente
+    sorted_classes = sorted(upward_unions.keys())
+
+    for i, cls in enumerate(sorted_classes):
+        union = upward_unions[cls].copy()  # Cria uma cópia do DataFrame para modificar
+        tmp = []  # Lista temporária para armazenar objetos que pertencem à aproximação superior
+        UClass = set(union['EXEMPLES'])  # Cria um conjunto dos exemplos na união de classes atual
+
+        for exemple in UClass:
+            performance = df_exemples[df_exemples["EXEMPLES"] == exemple].iloc[0, 1:-1].tolist()
+            original_class = df_exemples[df_exemples["EXEMPLES"] == exemple]["Dec"].values[0]
+            tmp.append({
+                "Exemples": exemple,
+                "Performance": performance,
+                "Class": original_class
+            })
+
+            # Verifica se o exemplo está em dominating_info
+            if exemple in dominating_info:
+                obj = dominating_info[exemple]
+                domination_col = next((col for col in obj.columns if "Dominating" in col), None)
+
+                if domination_col:
+                    domination_set = set(obj[domination_col])
+                    # Adiciona os exemplos de classe maior dominados pelo exemplo atual
+                    for dominating_exemple in domination_set:
+                        dominating_class = df_exemples[df_exemples["EXEMPLES"] == dominating_exemple]["Dec"].values
+                        if dominating_class.size > 0 and dominating_class[0] > cls:
+                            performance = df_exemples[df_exemples["EXEMPLES"] == dominating_exemple].iloc[0, 1:-1].tolist()
+                            tmp.append({
+                                "Exemples": dominating_exemple,
+                                "Performance": performance,
+                                "Class": dominating_class[0]
+                            })
+
+        # Remove duplicatas
+        seen = set()
+        unique_tmp = []
+        for d in tmp:
+            t = tuple(d.items())
+            if t not in seen:
+                seen.add(t)
+                unique_tmp.append(d)
+
+        # Ordena a lista temporária de exemplos alfabeticamente pela coluna "Exemples"
+        unique_tmp = sorted(unique_tmp, key=lambda x: x["Exemples"])
+
+        up_app[cls] = unique_tmp  # Adiciona a classe e os objetos não conflitantes ao dicionário de aproximações superiores
+
+    return up_app
 
 def main():
     df = open_file()
@@ -220,39 +313,38 @@ def main():
         for cls, df in class_dfs.items():
             print(f"Decision Class {cls} - {len(df)} Exemples")
             print(tabulate(df, headers='keys', tablefmt='fancy_grid', showindex=False))
-        print('\n')
 
         downward_unions, d_agg_df = downward_union_classes(class_dfs)
         for cls, union in downward_unions.items():
             print(f"Downwards Union Classes {cls} - {len(d_agg_df)} Exemples")
             print(tabulate(union, headers='keys', tablefmt='fancy_grid', showindex=False))
-        print('\n')
 
         upward_unions, u_agg_df = upward_union_classes(class_dfs)
         for cls, union in upward_unions.items():
             print(f"Upward Union Classes {cls} - {len(u_agg_df)} Exemples")
             print(tabulate(union, headers='keys', tablefmt='fancy_grid', showindex=False))
-        print('\n')
-
-        # Utilizando a nova função dominating_exemples
+        
         dominating_info = dominating_exemples(class_dfs, criteria, preferences)
-        for cls, examples in dominating_info.items():
-            for example in examples:
-                print(f"Example: {example['Example']}, Performance: {example['Performance']}")
-                print(f"Dominates:")
-                for dominated in example['Dominates']:
-                    print(f"  - Example: {dominated['Example']}, Performance: {dominated['Performance']}, Class: {dominated['Class']}")
-                print('\n')
-
-        # Utilizando a nova função dominated_exemples
         dominated_info = dominated_exemples(class_dfs, criteria, preferences)
-        for cls, examples in dominated_info.items():
-            for example in examples:
-                print(f"Example: {example['Example']}, Performance: {example['Performance']}")
-                print(f"Dominated By:")
-                for dominated_by in example['Dominated By']:
-                    print(f"  - Example: {dominated_by['Example']}, Performance: {dominated_by['Performance']}, Class: {dominated_by['Class']}")
-                print('\n')
+
+        # Loop for duplo para imprimir dominating_info e dominated_info
+        for example, dom_df in dominating_info.items():
+            print(tabulate(dom_df, headers='keys', tablefmt='fancy_grid', showindex=False))
+            if example in dominated_info:
+                domd_df = dominated_info[example]
+                print(tabulate(domd_df, headers='keys', tablefmt='fancy_grid', showindex=False))
+
+        lower_approx = lower_approximation(downward_unions, dominating_info, df_exemples)
+        print("\nLower Approximation:")
+        for cls, info in lower_approx.items():
+            print(f"Class: {cls}")
+            print(tabulate(info, headers='keys', tablefmt='fancy_grid'))
+
+        upward_approx = upward_approximation(upward_unions, dominating_info, df_exemples)
+        print("\nUpward Approximation:")
+        for cls, info in upward_approx.items():
+            print(f"Class: {cls}")
+            print(tabulate(info, headers='keys', tablefmt='fancy_grid'))
 
 if __name__ == "__main__":
     main()
