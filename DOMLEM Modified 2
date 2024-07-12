@@ -1,0 +1,230 @@
+import numpy as np
+import pandas as pd
+from functools import reduce
+from tabulate import tabulate
+
+def build_info_system(df, preferences):
+    attributes = list(df.columns[:-1])
+    decision = df.columns[-1]
+    infosystem = {
+        "attributes": [{"name": attr, "preference": pref} for attr, pref in zip(attributes, preferences)],
+        "examples": df.values.tolist()
+    }
+    return infosystem
+
+def is_better(r1, r2, preference):
+    return all(
+        ((x >= y and p == "gain") or (x <= y and p == "cost"))
+        for x, y, p in zip(r1, r2, preference)
+    )
+
+def is_worst(r1, r2, preference):
+    return all(
+        ((x <= y and p == "gain") or (x >= y and p == "cost"))
+        for x, y, p in zip(r1, r2, preference)
+    )
+
+def downward_unions_of_classes(infosystem):
+    matrix = infosystem["examples"]
+    decision_classes = sorted(list(set(int(r[-1]) for r in matrix)))
+    return [[r for r in matrix if int(r[-1]) <= c] for c in decision_classes]
+
+def upward_unions_of_classes(infosystem):
+    matrix = infosystem["examples"]
+    decision_classes = sorted(list(set(int(r[-1]) for r in matrix)))
+    return [[r for r in matrix if int(r[-1]) >= c] for c in decision_classes]
+
+def dominating_set(infosystem):
+    matrix = infosystem["examples"]
+    preference = [s["preference"] for s in infosystem["attributes"]]
+    return [
+        {
+            "object": row[0],
+            "dominance": [i[0] for i in matrix if is_better(i[1:-1], row[1:-1], preference)],
+            "examples": [i for i in matrix if is_better(i[1:-1], row[1:-1], preference)]
+        }
+        for row in matrix
+    ]
+
+def dominated_set(infosystem):
+    matrix = infosystem["examples"]
+    preference = [s["preference"] for s in infosystem["attributes"]]
+    return [
+        {
+            "object": row[0],
+            "dominance": [i[0] for i in matrix if is_worst(i[1:-1], row[1:-1], preference)],
+            "examples": [i for i in matrix if is_worst(i[1:-1], row[1:-1], preference)]
+        }
+        for row in matrix
+    ]
+
+def lower_approximation(union_classes, dom_set):
+    return [
+        {"class": c + 1, "objects": [d["object"] for d in dom_set if set(d["dominance"]).issubset(set([row[0] for row in union]))]}
+        for c, union in enumerate(union_classes)
+    ]
+
+def upper_approximation(union_classes, dom_set):
+    return [
+        {"class": c + 1, "objects": list(set().union(*[set(d["dominance"]) for d in dom_set if len(set(d["dominance"]) & set([row[0] for row in union])) > 0]))}
+        for c, union in enumerate(union_classes)
+    ]
+
+def boundaries(upper_approx, lower_approx):
+    return [
+        {"class": i + 1, "objects": list(set(upper["objects"]) - set(lower["objects"]))}
+        for i, (upper, lower) in enumerate(zip(upper_approx, lower_approx))
+    ]
+
+def domlem(lower_upward, lower_downward, infosystem):
+    rules = []
+
+    for ld in lower_downward[:-1]:
+        print(f"Processing lower_downward class {ld['class']}")
+        rules_found = find_rules(ld["objects"], infosystem, "three")
+        print(f"Rules found: {rules_found}")
+        rules.extend(rules_found)
+
+    for lu in lower_upward[1:]:
+        print(f"Processing lower_upward class {lu['class']}")
+        rules_found = find_rules(lu["objects"], infosystem, "one")
+        print(f"Rules found: {rules_found}")
+        rules.extend(rules_found)
+
+    return rules
+
+def find_rules(objects, infosystem, rule_type):
+    print("Início de find_rules")
+    rules = []
+    matrix = infosystem["examples"]
+    preferences = [attr["preference"] for attr in infosystem["attributes"]]
+
+    max_iterations = 1000
+    iterations = 0
+
+    while objects and iterations < max_iterations:
+        print(f"Iteração {iterations + 1}")
+        print(f"Objetos restantes: {objects}")
+        rule = []
+        covered_objects = find_covered_objects(rule, matrix)
+        print(f"Objetos inicialmente cobertos: {covered_objects}")
+
+        last_covered_objects = set()
+
+        while not all(obj in objects for obj in covered_objects):
+            best_condition = None
+            best_score = 0
+            for c, pref in enumerate(preferences):
+                for e in {row[c + 1] for row in matrix if row[0] in objects}:
+                    candidate = create_rule(c + 1, e, pref, matrix, rule_type)
+                    score = evaluate_rule(candidate, rule, objects, matrix)
+                    print(f"Condição candidata: {candidate}, Pontuação: {score}")
+                    if score > best_score:
+                        best_score = score
+                        best_condition = candidate
+            if best_condition and best_score > 0:
+                print(f"Melhor condição encontrada: {best_condition}")
+                rule.append(best_condition)
+                covered_objects = find_covered_objects(rule, matrix)
+                print(f"Objetos cobertos atualizados: {covered_objects}")
+                if set(covered_objects) == last_covered_objects:
+                    print("Nenhum progresso, interrompendo iteração interna para evitar loop infinito.")
+                    break
+                last_covered_objects = set(covered_objects)
+            else:
+                break
+        print(f"Regra encontrada: {rule}")
+        if rule:
+            rules.append(rule)
+        if not covered_objects:
+            break
+        objects = list(set(objects) - set(covered_objects))
+        iterations += 1
+
+    if iterations >= max_iterations:
+        print("Número máximo de iterações atingido, interrompendo para evitar loop infinito.")
+
+    return rules
+
+def create_rule(attribute, condition, preference, matrix, rule_type):
+    if rule_type == "one":
+        return {
+            "attribute": attribute,
+            "condition": condition,
+            "preference": preference,
+            "objects_covered": [row[0] for row in matrix if (row[attribute] >= condition if preference == "gain" else row[attribute] <= condition)]
+        }
+    elif rule_type == "three":
+        return {
+            "attribute": attribute,
+            "condition": condition,
+            "preference": preference,
+            "objects_covered": [row[0] for row in matrix if (row[attribute] <= condition if preference == "gain" else row[attribute] >= condition)]
+        }
+
+def evaluate_rule(candidate, rule, objects, matrix):
+    if not candidate:
+        return 0
+    covered_objects = find_covered_objects(rule + [candidate], matrix)
+    return len(set(covered_objects) & set(objects)) / len(covered_objects) if covered_objects else 0
+
+def find_covered_objects(rule, matrix):
+    if not rule:
+        return [row[0] for row in matrix]
+    return list(reduce(set.intersection, [set(cond["objects_covered"]) for cond in rule]))
+
+# Exemplo aleatório de dados
+data = {
+    'Criterion1': [1.5, 1.7, 0.5, 0.7, 3, 1, 1, 2.3, 1, 1.7, 2.5, 0.5, 1.2, 2, 1.9, 2.3, 2.7],
+    'Criterion2': [3, 5, 2, 0.5, 4.3, 2, 1.2, 3.3, 3, 2.8, 4, 3, 1, 2.4, 4.3, 4, 5.5],
+    'Criterion3': [12, 9.5, 2.5, 1.5, 9, 4.5, 8, 9, 5, 3.5, 11, 6, 7, 6, 14, 13, 15],
+    'Decision':   [2, 2, 1, 1, 3, 2, 1, 3, 1, 2, 2, 2, 2, 1, 2, 3, 3]
+}
+preferences = ['gain', 'gain', 'gain']
+
+df = pd.DataFrame(data)
+infosystem = build_info_system(df, preferences)
+print("infosystem:\n", infosystem, "\n")
+
+# Imprime apenas os exemplos do infosystem
+print("Examples from infosystem:\n", tabulate(infosystem["examples"], headers=['Criterion1', 'Criterion2', 'Criterion3', 'Decision'], tablefmt='fancy_grid'), "\n")
+
+# Calcula as uniões descendentes e ascendentes das classes
+downward = downward_unions_of_classes(infosystem)
+upward = upward_unions_of_classes(infosystem)
+
+# Imprime as uniões descendentes e ascendentes das classes
+print("Downward Unions of Classes:\n", tabulate(downward, headers='keys', tablefmt='fancy_grid'), "\n")
+print("Upward Unions of Classes:\n", tabulate(upward, headers='keys', tablefmt='fancy_grid'), "\n")
+
+# Calcula os conjuntos de dominância e dominados
+dominating = dominating_set(infosystem)
+dominated = dominated_set(infosystem)
+
+# Imprime os conjuntos de dominância e dominados
+print("Dominating Set:\n", tabulate(dominating, headers='keys', tablefmt='fancy_grid'), "\n")
+print("Dominated Set:\n", tabulate(dominated, headers='keys', tablefmt='fancy_grid'), "\n")
+
+# Calcula as aproximações inferiores e superiores
+lower_upward = lower_approximation(upward, dominating)
+lower_downward = lower_approximation(downward, dominated)
+upper_upward = upper_approximation(upward, dominating)
+upper_downward = upper_approximation(downward, dominating)
+
+# Calcula as fronteiras das aproximações
+boundaries_downward = boundaries(upper_downward, lower_downward)
+
+# Imprime as aproximações inferiores, superiores e as fronteiras
+print("Lower Approximations (Upward Unions):\n", tabulate(lower_upward, headers='keys', tablefmt='fancy_grid'), "\n")
+print("Lower Approximations (Downward Unions):\n", tabulate(lower_downward, headers='keys', tablefmt='fancy_grid'), "\n")
+print("Upper Approximations (Upward Unions):\n", tabulate(upper_upward, headers='keys', tablefmt='fancy_grid'), "\n")
+print("Upper Approximations (Downward Unions):\n", tabulate(upper_downward, headers='keys', tablefmt='fancy_grid'), "\n")
+print("Boundaries (Downward Unions):\n", tabulate(boundaries_downward, headers='keys', tablefmt='fancy_grid'), "\n")
+
+# Extrai as regras de decisão usando o algoritmo DOMLEM
+rules = domlem(lower_upward, lower_downward, infosystem)
+
+# Imprime as regras extraídas
+print("Decision Rules:\n")
+for rule in rules:
+    print(rule, "\n")
